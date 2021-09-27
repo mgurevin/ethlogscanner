@@ -41,6 +41,12 @@ type FilterStarted struct {
 	ChunkSize int
 }
 
+type CursorUpdated struct {
+	notification
+
+	Next Cursor
+}
+
 type FilterCompleted struct {
 	FilterStarted
 
@@ -321,6 +327,14 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 			case s.chLog <- &l:
 				atomic.StoreUint64((*uint64)(&s.next), uint64(s.curr.Next()))
 
+				select {
+				case s.chNotify <- &CursorUpdated{
+					notification: notification(time.Now()),
+					Next:         s.Next(),
+				}:
+				case <-s.ctx.Done():
+				}
+
 			case <-ctx.Done():
 				// fmt.Printf("-- ctx done: %d\n", 1)
 				return
@@ -330,6 +344,14 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 		s.curr = MakeCursor(to+1, 0, 0)
 
 		atomic.StoreUint64((*uint64)(&s.next), uint64(s.curr))
+
+		select {
+		case s.chNotify <- &CursorUpdated{
+			notification: notification(time.Now()),
+			Next:         s.Next(),
+		}:
+		case <-s.ctx.Done():
+		}
 	}()
 
 	return chErr
