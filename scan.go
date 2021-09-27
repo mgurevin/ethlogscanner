@@ -17,12 +17,49 @@ import (
 
 type Log types.Log
 
+type Notification interface {
+	keepInternal()
+
+	Time() time.Time
+}
+
+type notification time.Time
+
+type ChunkSizeUpdated struct {
+	notification
+
+	Previous int
+	Updated  int
+}
+
+type FilterStarted struct {
+	notification
+
+	From uint64
+	To   uint64
+
+	ChunkSize int
+}
+
+type FilterCompleted struct {
+	FilterStarted
+
+	Duration     time.Duration
+	NumberOfLogs int
+
+	HasErr bool
+}
+
+func (n *notification) keepInternal()  {}
+func (n notification) Time() time.Time { return time.Time(n) }
+
 type Scanner interface {
 	io.Closer
 
 	Err() <-chan error
 	Log() <-chan *Log
 	Done() <-chan struct{}
+	Notify() <-chan Notification
 
 	Next() Cursor
 }
@@ -38,9 +75,10 @@ type scanner struct {
 
 	chunk int
 
-	chErr  chan error
-	chLog  chan *Log
-	chDone chan struct{}
+	chErr    chan error
+	chLog    chan *Log
+	chDone   chan struct{}
+	chNotify chan Notification
 
 	chClose   chan struct{}
 	closeOnce sync.Once
@@ -64,10 +102,11 @@ func Scan(ctx context.Context, ethClient *ethclient.Client, options ...Option) (
 		next:  opts.start,
 		chunk: opts.initChunkSize,
 
-		chErr:   make(chan error),
-		chLog:   make(chan *Log),
-		chDone:  make(chan struct{}),
-		chClose: make(chan struct{}),
+		chErr:    make(chan error),
+		chLog:    make(chan *Log),
+		chDone:   make(chan struct{}),
+		chClose:  make(chan struct{}),
+		chNotify: make(chan Notification),
 	}
 
 	go s.scan()
@@ -81,6 +120,7 @@ func (s *scanner) scan() {
 
 		close(s.chLog)
 		close(s.chErr)
+		close(s.chNotify)
 
 		s.closeOnce.Do(func() {
 			close(s.chClose)
@@ -190,6 +230,18 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 
 			// fmt.Printf("-- filter logs: from: %d, to: %d, chunk: %d\n", from, to, s.chunk)
 
+			notifyStarted := &FilterStarted{
+				notification: notification(time.Now()),
+				From:         from,
+				To:           to,
+				ChunkSize:    s.chunk,
+			}
+
+			select {
+			case s.chNotify <- notifyStarted:
+			case <-s.ctx.Done():
+			}
+
 			start := time.Now()
 
 			logs, err = s.ethC.FilterLogs(ctx, ethereum.FilterQuery{
@@ -200,6 +252,18 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 			})
 
 			fetchDur = time.Since(start)
+
+			notifyStarted.notification = notification(time.Now())
+
+			select {
+			case s.chNotify <- &FilterCompleted{
+				FilterStarted: *notifyStarted,
+				Duration:      fetchDur,
+				NumberOfLogs:  len(logs),
+				HasErr:        err != nil,
+			}:
+			case <-s.ctx.Done():
+			}
 
 			err = errors.WithStack(err)
 
@@ -272,16 +336,31 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 }
 
 func (s *scanner) incrChunkSize() {
-	// defer func(curr int) { fmt.Printf("-- increase chunk size: %d -> %d\n", curr, s.chunk) }(s.chunk)
+	defer s.notifyChunkSize(time.Now(), s.chunk)
+
 	if s.chunk *= 2; s.chunk > s.opts.maxChunkSize {
 		s.chunk = s.opts.maxChunkSize
 	}
 }
 
 func (s *scanner) decrChunkSize() {
-	// defer func(curr int) { fmt.Printf("-- decrease chunk size: %d -> %d\n", curr, s.chunk) }(s.chunk)
+	defer s.notifyChunkSize(time.Now(), s.chunk)
+
 	if s.chunk /= 2; s.chunk == 0 {
 		s.chunk = 1
+	}
+}
+
+func (s *scanner) notifyChunkSize(t time.Time, prev int) {
+	if s.chunk != prev {
+		select {
+		case s.chNotify <- &ChunkSizeUpdated{
+			notification: notification(t),
+			Previous:     prev,
+			Updated:      s.chunk,
+		}:
+		case <-s.ctx.Done():
+		}
 	}
 }
 
@@ -295,6 +374,10 @@ func (s *scanner) Log() <-chan *Log {
 
 func (s *scanner) Done() <-chan struct{} {
 	return s.chDone
+}
+
+func (s *scanner) Notify() <-chan Notification {
+	return s.chNotify
 }
 
 func (s *scanner) Next() Cursor {
