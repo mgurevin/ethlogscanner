@@ -64,7 +64,7 @@ type Scanner interface {
 
 	Err() <-chan error
 	Log() <-chan *Log
-	Done() <-chan struct{}
+	Done() <-chan error
 	Notify() <-chan Notification
 
 	Next() Cursor
@@ -83,7 +83,7 @@ type scanner struct {
 
 	chErr    chan error
 	chLog    chan *Log
-	chDone   chan struct{}
+	chDone   chan error
 	chNotify chan Notification
 
 	chClose   chan struct{}
@@ -110,7 +110,7 @@ func Scan(ctx context.Context, ethClient *ethclient.Client, options ...Option) (
 
 		chErr:    make(chan error),
 		chLog:    make(chan *Log),
-		chDone:   make(chan struct{}),
+		chDone:   make(chan error),
 		chClose:  make(chan struct{}),
 		chNotify: make(chan Notification),
 	}
@@ -121,8 +121,14 @@ func Scan(ctx context.Context, ethClient *ethclient.Client, options ...Option) (
 }
 
 func (s *scanner) scan() {
+	var doneErr error
+
 	defer func() {
-		defer close(s.chDone)
+		defer func() {
+			defer close(s.chDone)
+
+			s.chDone <- doneErr
+		}()
 
 		close(s.chLog)
 		close(s.chErr)
@@ -141,8 +147,7 @@ func (s *scanner) scan() {
 
 		select {
 		case <-s.ctx.Done():
-			s.chErr <- errors.WithStack(s.ctx.Err())
-
+			doneErr = errors.WithStack(s.ctx.Err())
 			return false
 
 		case <-s.chClose:
@@ -154,6 +159,10 @@ func (s *scanner) scan() {
 			}
 
 			temporary, _, tooMuchResults := errClasses(err)
+			if !temporary {
+				doneErr = errors.WithStack(s.ctx.Err())
+				return false
+			}
 
 			if tooMuchResults {
 				s.decrChunkSize(subCtx)
@@ -164,7 +173,7 @@ func (s *scanner) scan() {
 			case <-s.ctx.Done():
 			}
 
-			return temporary
+			return true
 		}
 	}
 
@@ -426,7 +435,7 @@ func (s *scanner) Log() <-chan *Log {
 	return s.chLog
 }
 
-func (s *scanner) Done() <-chan struct{} {
+func (s *scanner) Done() <-chan error {
 	return s.chDone
 }
 
