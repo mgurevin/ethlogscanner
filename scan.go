@@ -160,7 +160,7 @@ func (s *scanner) scan() {
 
 			temporary, _, tooMuchResults := errClasses(err)
 			if !temporary {
-				doneErr = errors.WithStack(s.ctx.Err())
+				doneErr = errors.WithStack(err)
 				return false
 			}
 
