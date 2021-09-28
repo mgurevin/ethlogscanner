@@ -156,7 +156,7 @@ func (s *scanner) scan() {
 			temporary, _, tooMuchResults := errClasses(err)
 
 			if tooMuchResults {
-				s.decrChunkSize()
+				s.decrChunkSize(subCtx)
 			}
 
 			select {
@@ -220,7 +220,7 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 
 		err := retry(ctx, s.opts.retryHead, func(ctx context.Context, tooMuchResults bool) (err error) {
 			if tooMuchResults {
-				s.decrChunkSize()
+				s.decrChunkSize(ctx)
 			}
 
 			from = s.curr.BlockNum()
@@ -244,8 +244,15 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 			}
 
 			select {
-			case s.chNotify <- notifyStarted:
-			case <-s.ctx.Done():
+			case <-ctx.Done():
+				return
+
+			default:
+				select {
+				case s.chNotify <- notifyStarted:
+				case <-ctx.Done():
+					return
+				}
 			}
 
 			start := time.Now()
@@ -262,13 +269,21 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 			notifyStarted.notification = notification(time.Now())
 
 			select {
-			case s.chNotify <- &FilterCompleted{
-				FilterStarted: *notifyStarted,
-				Duration:      fetchDur,
-				NumberOfLogs:  len(logs),
-				HasErr:        err != nil,
-			}:
-			case <-s.ctx.Done():
+			case <-ctx.Done():
+				return
+
+			default:
+				select {
+				case s.chNotify <- &FilterCompleted{
+					FilterStarted: *notifyStarted,
+					Duration:      fetchDur,
+					NumberOfLogs:  len(logs),
+					HasErr:        err != nil,
+				}:
+
+				case <-ctx.Done():
+					return
+				}
 			}
 
 			err = errors.WithStack(err)
@@ -292,13 +307,13 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 		numberOfLogs := len(logs)
 
 		if fetchDur > s.opts.adjThresholdDur {
-			s.decrChunkSize()
+			s.decrChunkSize(ctx)
 
 		} else if math.Abs(float64(numberOfLogs-s.lastFetchedNumberOfLogs)) > float64(s.lastFetchedNumberOfLogs) {
-			s.decrChunkSize()
+			s.decrChunkSize(ctx)
 
 		} else {
-			s.incrChunkSize()
+			s.incrChunkSize(ctx)
 		}
 
 		s.lastFetchedNumberOfLogs = numberOfLogs
@@ -328,11 +343,19 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 				atomic.StoreUint64((*uint64)(&s.next), uint64(s.curr.Next()))
 
 				select {
-				case s.chNotify <- &CursorUpdated{
-					notification: notification(time.Now()),
-					Next:         s.Next(),
-				}:
-				case <-s.ctx.Done():
+				case <-ctx.Done():
+					return
+
+				default:
+					select {
+					case s.chNotify <- &CursorUpdated{
+						notification: notification(time.Now()),
+						Next:         s.Next(),
+					}:
+
+					case <-ctx.Done():
+						return
+					}
 				}
 
 			case <-ctx.Done():
@@ -346,42 +369,58 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 		atomic.StoreUint64((*uint64)(&s.next), uint64(s.curr))
 
 		select {
-		case s.chNotify <- &CursorUpdated{
-			notification: notification(time.Now()),
-			Next:         s.Next(),
-		}:
-		case <-s.ctx.Done():
+		case <-ctx.Done():
+			return
+
+		default:
+			select {
+			case s.chNotify <- &CursorUpdated{
+				notification: notification(time.Now()),
+				Next:         s.Next(),
+			}:
+
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
 	return chErr
 }
 
-func (s *scanner) incrChunkSize() {
-	defer s.notifyChunkSize(time.Now(), s.chunk)
+func (s *scanner) incrChunkSize(ctx context.Context) {
+	defer s.notifyChunkSize(ctx, time.Now(), s.chunk)
 
 	if s.chunk *= 2; s.chunk > s.opts.maxChunkSize {
 		s.chunk = s.opts.maxChunkSize
 	}
 }
 
-func (s *scanner) decrChunkSize() {
-	defer s.notifyChunkSize(time.Now(), s.chunk)
+func (s *scanner) decrChunkSize(ctx context.Context) {
+	defer s.notifyChunkSize(ctx, time.Now(), s.chunk)
 
 	if s.chunk /= 2; s.chunk == 0 {
 		s.chunk = 1
 	}
 }
 
-func (s *scanner) notifyChunkSize(t time.Time, prev int) {
+func (s *scanner) notifyChunkSize(ctx context.Context, t time.Time, prev int) {
 	if s.chunk != prev {
 		select {
-		case s.chNotify <- &ChunkSizeUpdated{
-			notification: notification(t),
-			Previous:     prev,
-			Updated:      s.chunk,
-		}:
-		case <-s.ctx.Done():
+		case <-ctx.Done():
+			return
+
+		default:
+			select {
+			case s.chNotify <- &ChunkSizeUpdated{
+				notification: notification(t),
+				Previous:     prev,
+				Updated:      s.chunk,
+			}:
+
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 }
