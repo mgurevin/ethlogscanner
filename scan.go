@@ -182,7 +182,6 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 
 		if l := s.lastKnownHead; l == 0 || l <= s.curr.BlockNum()+uint64(s.chunk) {
 			err := retry(ctx, s.opts.retryHead, func(ctx context.Context, tooMuchResults bool) (err error) {
-				// fmt.Printf("-- getting head block\n")
 				head, err = s.ethC.BlockNumber(ctx)
 
 				err = errors.WithStack(err)
@@ -233,8 +232,6 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 			if from > to {
 				from = to
 			}
-
-			// fmt.Printf("-- filter logs: from: %d, to: %d, chunk: %d\n", from, to, s.chunk)
 
 			notifyStarted := &FilterStarted{
 				notification: notification(time.Now()),
@@ -299,7 +296,7 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 		})
 
 		if err != nil {
-			chErr <- err
+			chErr <- errors.WithStack(err)
 
 			return
 		}
@@ -318,8 +315,6 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 
 		s.lastFetchedNumberOfLogs = numberOfLogs
 
-		// fmt.Printf("-- numberOfLogs: %d\n", numberOfLogs)
-
 		for _, log := range logs {
 			l := Log(log)
 
@@ -332,7 +327,6 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 					}
 				}
 
-				// fmt.Printf("-- skipped: %s - removed: %v\n", c, l.Removed)
 				continue
 			}
 
@@ -359,7 +353,6 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 				}
 
 			case <-ctx.Done():
-				// fmt.Printf("-- ctx done: %d\n", 1)
 				return
 			}
 		}
@@ -446,7 +439,6 @@ func (s *scanner) Next() Cursor {
 }
 
 func (s *scanner) Close() error {
-	// defer fmt.Printf("-- close invoked: %d\n", 1)
 	s.closeOnce.Do(func() {
 		close(s.chClose)
 	})
