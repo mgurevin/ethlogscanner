@@ -342,27 +342,33 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 			s.curr = l.Cursor()
 
 			select {
-			case s.chLog <- &l:
-				atomic.StoreUint64((*uint64)(&s.next), uint64(s.curr.Next()))
-
-				select {
-				case <-ctx.Done():
-					return
-
-				default:
-					select {
-					case s.chNotify <- &CursorUpdated{
-						notification: notification(time.Now()),
-						Next:         s.Next(),
-					}:
-
-					case <-ctx.Done():
-						return
-					}
-				}
-
 			case <-ctx.Done():
 				return
+
+			default:
+				select {
+				case s.chLog <- &l:
+					atomic.StoreUint64((*uint64)(&s.next), uint64(s.curr.Next()))
+
+					select {
+					case <-ctx.Done():
+						return
+
+					default:
+						select {
+						case s.chNotify <- &CursorUpdated{
+							notification: notification(time.Now()),
+							Next:         s.Next(),
+						}:
+
+						case <-ctx.Done():
+							return
+						}
+					}
+
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 
