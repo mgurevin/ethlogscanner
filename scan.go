@@ -315,7 +315,7 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 		if fetchDur > s.opts.adjThresholdDur {
 			s.decrChunkSize(ctx)
 
-		} else if math.Abs(float64(numberOfLogs-s.lastFetchedNumberOfLogs)) > float64(s.lastFetchedNumberOfLogs) {
+		} else if math.Abs(float64(numberOfLogs-s.lastFetchedNumberOfLogs)) > float64(s.opts.adjThresholdLogs) {
 			s.decrChunkSize(ctx)
 
 		} else {
@@ -372,10 +372,6 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 			}
 		}
 
-		s.curr = MakeCursor(to+1, 0, 0)
-
-		atomic.StoreUint64((*uint64)(&s.next), uint64(s.curr))
-
 		select {
 		case <-ctx.Done():
 			return
@@ -386,6 +382,10 @@ func (s *scanner) subScan(ctx context.Context) <-chan error {
 				notification: notification(time.Now()),
 				Next:         s.Next(),
 			}:
+
+				s.curr = MakeCursor(to+1, 0, 0)
+
+				atomic.StoreUint64((*uint64)(&s.next), uint64(s.curr))
 
 			case <-ctx.Done():
 				return
